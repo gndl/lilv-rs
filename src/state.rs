@@ -1,5 +1,6 @@
 use std::{ptr::NonNull, sync::Arc};
 use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_void};
 
 use lilv_sys as lib;
 
@@ -13,7 +14,7 @@ use crate::world::Life;
 unsafe impl Send for State {}
 unsafe impl Sync for State {}
 
-pub type Value = *const ::std::os::raw::c_void;
+pub type Value = *const c_void;
 
 /// Convert an objet to a generic port value.
 pub fn value<T>(obj: &T) -> Value {
@@ -21,7 +22,7 @@ pub fn value<T>(obj: &T) -> Value {
 }
 
 /// Convert a generic port value to an objet. The requested data type must be the same as that of the corresponding port.
-pub fn from_value<T>(value: &Value) -> &mut T {
+pub fn from_value<T>(value: &mut Value) -> &mut T {
     unsafe { &mut *(*value as *mut T) }
 }
 
@@ -33,12 +34,12 @@ pub trait GetPortValue {
 }
 
 unsafe extern "C" fn get_port_value_func(
-    port_symbol: *const ::std::os::raw::c_char,
-    user_data: *mut ::std::os::raw::c_void,
+    port_symbol: *const c_char,
+    user_data: *mut c_void,
     size: *mut u32,
     type_: *mut u32,
-) -> *const ::std::os::raw::c_void {
-    let user_ptr = user_data as *mut Option<Box<dyn GetPortValue>>;
+) -> *const c_void {
+    let user_ptr = user_data as *mut Option<&mut dyn GetPortValue>;
     let user = unsafe { &mut *user_ptr };
     let port_symbol = unsafe { CStr::from_ptr(port_symbol) };
 
@@ -63,13 +64,13 @@ pub trait SetPortValue {
 }
 
 unsafe extern "C" fn set_port_value_func(
-    port_symbol: *const ::std::os::raw::c_char,
-    user_data: *mut ::std::os::raw::c_void,
-    value: *const ::std::os::raw::c_void,
+    port_symbol: *const c_char,
+    user_data: *mut c_void,
+    value: *const c_void,
     size: u32,
     type_: u32,
 ) {
-    let user_ptr = user_data as *mut Option<Box<dyn SetPortValue>>;
+    let user_ptr = user_data as *mut Option<&mut dyn SetPortValue>;
     let user = unsafe { &mut *user_ptr };
     let port_symbol = unsafe { CStr::from_ptr(port_symbol) };
 
@@ -100,7 +101,7 @@ impl State {
         copy_dir: Option<&str>,
         link_dir: Option<&str>,
         save_dir: Option<&str>,
-        user: Option<&Box<dyn GetPortValue>>,
+        user: Option<&mut dyn GetPortValue>,
         flags: lv2_sys::LV2_State_Flags,
         features: FS,
     ) -> Option<State>
@@ -110,14 +111,19 @@ impl State {
         let plugin_ptr = plugin.inner.as_ptr();
         let instance = instance.inner.as_ptr();
         let file_d = CString::new(file_dir.unwrap_or_default()).unwrap();
-        let file_dir: *const ::std::os::raw::c_char = file_dir.map_or(std::ptr::null(), |_| file_d.as_ptr().cast());
+        let file_dir: *const c_char = file_dir.map_or(std::ptr::null(), |_| file_d.as_ptr().cast());
         let copy_d = CString::new(copy_dir.unwrap_or_default()).unwrap();
-        let copy_dir: *const ::std::os::raw::c_char = copy_dir.map_or(std::ptr::null(), |_| copy_d.as_ptr().cast());
+        let copy_dir: *const c_char = copy_dir.map_or(std::ptr::null(), |_| copy_d.as_ptr().cast());
         let link_d = CString::new(link_dir.unwrap_or_default()).unwrap();
-        let link_dir: *const ::std::os::raw::c_char = link_dir.map_or(std::ptr::null(), |_| link_d.as_ptr().cast());
+        let link_dir: *const c_char = link_dir.map_or(std::ptr::null(), |_| link_d.as_ptr().cast());
         let save_d = CString::new(save_dir.unwrap_or_default()).unwrap();
-        let save_dir: *const ::std::os::raw::c_char = save_dir.map_or(std::ptr::null(), |_| save_d.as_ptr().cast());
-        let get_value: lib::LilvGetPortValueFunc = user.map_or(None, |_| Some(get_port_value_func));
+        let save_dir: *const c_char = save_dir.map_or(std::ptr::null(), |_| save_d.as_ptr().cast());
+        let get_value: lib::LilvGetPortValueFunc = if user.is_some() {
+            Some(get_port_value_func)
+        }
+        else {
+            None
+        };
         let user_data = NonNull::from(&user).as_ptr().cast();
 
         let features_vec: Vec<*const LV2Feature> = features
@@ -224,7 +230,7 @@ impl State {
     /// This is useful in hosts that need to retrieve the port values in a state snapshot for special handling.
     pub fn emit_port_values(
         &self,
-        user: &Box<dyn SetPortValue>,
+        user: &mut dyn SetPortValue,
     ) {
         let set_value: lib::LilvSetPortValueFunc = Some(set_port_value_func);
         let some_user = Some(user);
@@ -251,7 +257,7 @@ impl State {
     pub fn restore<'a, FS>(
         &self,
         instance: &Instance,
-        user: Option<&Box<dyn SetPortValue>>,
+        user: Option<&mut dyn SetPortValue>,
         flags: lv2_sys::LV2_State_Flags,
         features: FS,
     )
@@ -259,7 +265,12 @@ impl State {
         FS: IntoIterator<Item = &'a LV2Feature>,
     {
         let instance = instance.inner.as_ptr();
-        let set_value: lib::LilvSetPortValueFunc = user.map_or(None, |_| Some(set_port_value_func));
+        let set_value: lib::LilvSetPortValueFunc = if user.is_some() {
+            Some(set_port_value_func)
+        }
+        else {
+            None
+        };
         let user_data = NonNull::from(&user).as_ptr().cast();
 
         let features_vec: Vec<*const LV2Feature> = features
@@ -299,7 +310,7 @@ impl State {
         let world_ptr = self.world.inner.lock().as_ptr();
         let unmap = NonNull::from(unmap).as_ptr().cast();
         let c_uri = CString::new(uri.unwrap_or_default()).unwrap();
-        let uri: *const ::std::os::raw::c_char = uri.map_or(std::ptr::null(), |_| c_uri.as_ptr().cast());
+        let uri: *const c_char = uri.map_or(std::ptr::null(), |_| c_uri.as_ptr().cast());
         let dir = CString::new(dir).unwrap();
         let filename = CString::new(filename).unwrap();
 
@@ -335,7 +346,7 @@ impl State {
         let unmap = NonNull::from(unmap).as_ptr().cast();
         let uri = CString::new(uri).unwrap();
         let c_base_uri = CString::new(base_uri.unwrap_or_default()).unwrap();
-        let base_uri: *const ::std::os::raw::c_char = base_uri.map_or(std::ptr::null(), |_| c_base_uri.as_ptr().cast());
+        let base_uri: *const c_char = base_uri.map_or(std::ptr::null(), |_| c_base_uri.as_ptr().cast());
 
         let state_string = unsafe { lib::lilv_state_to_string(
             world_ptr,
@@ -397,8 +408,7 @@ impl Drop for State {
 impl PartialEq for State {
     /// Return true iff `self` is equivalent to `other`.
     fn eq(&self, other: &Self) -> bool {
-        let res = unsafe { lib::lilv_state_equals(self.inner.as_ptr(), other.inner.as_ptr()) };
-        res
+        unsafe { lib::lilv_state_equals(self.inner.as_ptr(), other.inner.as_ptr()) }
     }
 }
 
@@ -499,12 +509,7 @@ mod tests {
             data: unmap_data_ptr.as_ptr().cast(),
         };
 
-        let load_default_state_feature = LV2Feature {
-            uri: lv2_sys::LV2_STATE__loadDefaultState.as_ptr().cast(),
-            data: std::ptr::null_mut(),
-        };
-
-        let features = vec![urid_map_feature, urid_unmap_feature, load_default_state_feature];
+        let features = vec![urid_map_feature, urid_unmap_feature];
         let plugin_uri = "http://lv2plug.in/plugins/eg-amp";
         let plugin_uri_node = world.new_uri(plugin_uri);
         let plugin = world.plugins().plugin(&plugin_uri_node).unwrap();
@@ -526,7 +531,7 @@ mod tests {
         assert!(state.is_some());
         let mut state = state.unwrap();
         assert!(state.plugin_uri() == plugin_uri_node);
-        assert!(state.uri() == None);
+        assert!(state.uri().is_none());
         state.set_label("my_label");
         assert!(state.label() == Some("my_label"));
 

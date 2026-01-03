@@ -558,14 +558,14 @@ impl Plugin {
         copy_dir: Option<&str>,
         link_dir: Option<&str>,
         save_dir: Option<&str>,
-        user: Option<&Box<dyn GetPortValue>>,
+        user: Option<&mut dyn GetPortValue>,
         flags: lv2_sys::LV2_State_Flags,
         features: FS,
     ) -> Option<State>
     where
         FS: IntoIterator<Item = &'a LV2Feature>,
     {
-        State::new_from_instance(&self, instance, map, file_dir, copy_dir, link_dir, save_dir, user, flags, features)
+        State::new_from_instance(self, instance, map, file_dir, copy_dir, link_dir, save_dir, user, flags, features)
     }
 }
 
