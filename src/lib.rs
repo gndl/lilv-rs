@@ -6,7 +6,7 @@ pub mod node;
 pub mod plugin;
 /// Contains port to describe IO for plugins.
 pub mod port;
-/// Contains functionality for states.
+/// Contains state functionality.
 pub mod state;
 /// Contains data about plugin UIs.
 pub mod ui;
