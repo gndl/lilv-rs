@@ -128,7 +128,7 @@ impl World {
             .find_map(|h| std::ffi::CString::new(h.as_bytes()).ok());
         let path = std::ffi::CString::new(path.as_bytes()).unwrap();
 
-        let host_ptr = host.map_or(std::ptr::null(), |h| h.as_ptr());
+        let host_ptr = host.as_ref().map_or(std::ptr::null(), |h| h.as_ptr());
         let path_ptr = path.as_ptr();
 
         {
